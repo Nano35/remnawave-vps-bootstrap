@@ -79,6 +79,18 @@ class TransportTests(unittest.TestCase):
         self.assertIn('challenge=basic', detail)
         self.assertNotIn('private', detail)
 
+    def test_409_is_reported_as_conflict_without_retry(self):
+        error = helper.urllib.error.HTTPError('https://panel.example.com/api/config-profiles',
+            409, 'Conflict', Message(), self.response())
+        opener = Mock()
+        opener.open.side_effect = error
+        with patch.object(helper.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 409 conflict') as result:
+                helper.api('POST', 'config-profiles', {'name': 'Node'})
+        self.assertIn('unique across the whole panel', str(result.exception))
+        self.assertNotIn('check token permissions', str(result.exception))
+        self.assertEqual(opener.open.call_count, 1)
+
     def test_opaque_token_and_optional_bearer_prefix(self):
         self.assertEqual(helper.normalize_token('  abc+/def==  '), 'abc+/def==')
         self.assertEqual(helper.normalize_token('Bearer abc+/def=='), 'abc+/def==')

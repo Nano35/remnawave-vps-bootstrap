@@ -47,7 +47,9 @@ def fake(method, path, body=None):
         r = copy.deepcopy(body)
         r['uuid'] = path + '-uuid'
         if path == 'config-profiles':
-            r['inbounds'] = [{'tag': 'VLESS_REALITY', 'uuid': 'inbound-uuid'}]
+            tags = [i['tag'] for i in body['config']['inbounds']]
+            assert not any(i['tag'] in tags for p in records['profiles'] for i in p['inbounds']), 'HTTP 409: duplicate inbound tag'
+            r['inbounds'] = [{'tag': tag, 'uuid': 'inbound-uuid'} for tag in tags]
             records['profiles'].append(r)
         elif path == 'nodes':
             r['isConnected'] = True
@@ -70,6 +72,7 @@ helper.api = fake
 with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
     helper.ROOT = Path(td)
     helper.prepare()
+    assert json.loads((Path(td) / 'xray.json').read_text())['inbounds'][0]['tag'] == 'VLESS_REALITY_Test_Node'
     backup = Path(td) / 'backups' / 'first'
     backup.mkdir(parents=True)
     (backup / 'manifest.json').write_text('{}')
@@ -123,6 +126,53 @@ with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
     assert len(records['squads']) == 1
     assert helper.squad_ids(records['squads'][0]) == ['old-inbound', 'new-unrelated-inbound']
     assert 'node_uuid' not in helper.load()
+
+# Regression: another node already owns the old globally shared inbound tag.
+records['profiles'] = [{'uuid': 'legacy-profile', 'name': 'NODE-PL-01',
+    'inbounds': [{'uuid': 'legacy-inbound', 'tag': 'VLESS_REALITY'}]}]
+helper.NAME = 'NODE-FI-02'
+helper.DOMAIN = 'fi.example.com'
+with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
+    helper.ROOT = Path(td)
+    helper.prepare()
+    config = json.loads((Path(td) / 'xray.json').read_text())
+    assert config['inbounds'][0]['tag'] == 'VLESS_REALITY_NODE-FI-02'
+    reality = copy.deepcopy(config['inbounds'][0]['streamSettings']['realitySettings'])
+    # Simulate files left behind by the old installer after its HTTP 409.
+    config['inbounds'][0]['tag'] = 'VLESS_REALITY'
+    helper.save('xray.json', config)
+    helper.prepare()
+    migrated = json.loads((Path(td) / 'xray.json').read_text())
+    assert migrated['inbounds'][0]['tag'] == 'VLESS_REALITY_NODE-FI-02'
+    assert migrated['inbounds'][0]['streamSettings']['realitySettings'] == reality
+    helper.register()
+    before_posts = sum(m == 'POST' for m, _ in calls)
+    helper.prepare()
+    helper.register()
+    assert sum(m == 'POST' for m, _ in calls) == before_posts
+    assert records['profiles'][0]['inbounds'][0]['tag'] == 'VLESS_REALITY'
+
+# A registered legacy node must keep its existing tag and inbound UUID.
+records['profiles'] = records['profiles'][:1]
+records['nodes'] = []
+records['hosts'] = []
+helper.NAME = 'NODE-PL-01'
+helper.DOMAIN = 'pl.example.com'
+with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
+    helper.ROOT = Path(td)
+    helper.save('state.json', {'domain': helper.DOMAIN, 'name': helper.NAME,
+        'panel': helper.URL, 'panel_ip': os.environ['PANEL_IP'],
+        'profile_uuid': 'legacy-profile', 'inbound_uuid': 'legacy-inbound'})
+    config['inbounds'][0]['streamSettings']['realitySettings']['serverNames'] = [helper.DOMAIN]
+    helper.save('xray.json', config)
+    before = (Path(td) / 'xray.json').read_text()
+    helper.prepare()
+    assert (Path(td) / 'xray.json').read_text() == before
+    assert helper.load()['inbound_uuid'] == 'legacy-inbound'
+    assert helper.load()['inbound_tag'] == 'VLESS_REALITY'
+records['profiles'] = []
+helper.NAME = os.environ['NODE_NAME']
+helper.DOMAIN = os.environ['NODE_DOMAIN']
 
 def module(name):
     spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(name + '.py'))

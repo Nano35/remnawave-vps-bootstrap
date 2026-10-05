@@ -156,6 +156,11 @@ def api(method, path, body=None):
                 raise RuntimeError(f'API {method} {path}: HTTP 401. {detail}. '
                     'Authentication was rejected; verify full token, target panel and Authorization forwarding. '
                     'Cookie access and API-token authentication are separate checks.') from None
+            if e.code == 409:
+                e.close()
+                raise RuntimeError(f'API {method} {path}: HTTP 409 conflict. '
+                    'Check duplicate profile names and inbound tags; inbound tags must be unique across the whole panel. '
+                    'Existing panel objects are not overwritten.') from None
             raise RuntimeError(f'API {method} {path}: HTTP {e.code}; check token permissions/API access. Redirects are blocked.') from None
         except (urllib.error.URLError, http.client.RemoteDisconnected, http.client.IncompleteRead,
                 ConnectionError, TimeoutError, OSError):
@@ -228,7 +233,7 @@ def prepare():
         config = {
             'log': {'loglevel': 'warning'},
             'inbounds': [{
-                'tag': 'VLESS_REALITY', 'listen': '0.0.0.0', 'port': 443, 'protocol': 'vless',
+                'tag': 'VLESS_REALITY_' + NAME, 'listen': '0.0.0.0', 'port': 443, 'protocol': 'vless',
                 'settings': {'clients': [], 'decryption': 'none'},
                 'sniffing': {'enabled': True, 'destOverride': ['http', 'tls', 'quic'], 'routeOnly': True},
                 'streamSettings': {'network': 'tcp', 'security': 'reality', 'realitySettings': {
@@ -244,16 +249,31 @@ def prepare():
             ], 'outboundTag': 'BLOCK'}]}
         }
         save('xray.json', config)
+    config = json.loads((ROOT / 'xray.json').read_text())
+    tag = config['inbounds'][0]['tag']
+    if not state.get('profile_uuid'):
+        # Upgrade the saved config from an interrupted old installer, preserving keys.
+        if tag == 'VLESS_REALITY':
+            tag = 'VLESS_REALITY_' + NAME
+        if any(i['tag'] == tag for p in profiles for i in p.get('inbounds', [])):
+            raise RuntimeError(f'Inbound tag {tag} already exists in another panel profile; no overwrite')
+        if config['inbounds'][0]['tag'] != tag:
+            config['inbounds'][0]['tag'] = tag
+            save('xray.json', config)
+            print('Updated unregistered legacy inbound tag; Reality keys and shortId preserved.')
+    state['inbound_tag'] = tag
+    save('state.json', state)
     print('Panel API and saved parameters checked.')
 
 
 def register():
     state = load()
     config = json.loads((ROOT / 'xray.json').read_text())
+    tag = config['inbounds'][0]['tag']
     if not state.get('profile_uuid'):
         r = api('POST', 'config-profiles', {'name': NAME, 'config': config})
         state['profile_uuid'] = r['uuid']
-        state['inbound_uuid'] = next(x['uuid'] for x in r['inbounds'] if x['tag'] == 'VLESS_REALITY')
+        state['inbound_uuid'] = next(x['uuid'] for x in r['inbounds'] if x['tag'] == tag)
         save('state.json', state)
     if not state.get('node_uuid'):
         r = api('POST', 'nodes', {'name': NAME, 'address': DOMAIN, 'port': 2222,
@@ -295,7 +315,7 @@ def attach_squad():
     if selected is None:
         answer = input('Internal Squad: номер или Enter — не добавлять: ').strip()
         if not answer:
-            print('Skipped squad assignment; add VLESS_REALITY manually.')
+            print(f"Skipped squad assignment; add {state.get('inbound_tag', 'the node inbound')} manually.")
             return
         if not answer.isdigit() or not 1 <= int(answer) <= len(squads):
             raise RuntimeError('Invalid squad selection')
