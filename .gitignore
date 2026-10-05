@@ -1,0 +1,31 @@
+# Runtime credentials, generated configs and backups
+.env
+.env.*
+!.env.example
+state.json
+images.json
+node-secret
+monitor.json
+monitor-status.json
+xray.json
+external-test.json
+verified-core/
+backups/
+reverse-proxy/
+vps-bootstrap-live/
+known_hosts
+*.pem
+*.key
+*.log
+
+# Python and local tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+tmp*/
+.pytest_cache/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
