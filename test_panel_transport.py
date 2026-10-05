@@ -8,6 +8,10 @@ from unittest.mock import Mock, patch
 import unittest
 import base64
 import json
+import re
+import shutil
+import subprocess
+import sys
 from email.message import Message
 
 os.environ.update(PANEL_URL='https://panel.example.com/?gate=exampleSecret', PANEL_TOKEN='exampleToken',
@@ -19,6 +23,28 @@ spec.loader.exec_module(helper)
 
 
 class TransportTests(unittest.TestCase):
+    def test_node_name_paste_normalization_in_bash(self):
+        bash = shutil.which('bash')
+        if not bash and os.name == 'nt':
+            candidate = Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Git/bin/bash.exe'
+            bash = str(candidate) if candidate.exists() else None
+        if not bash:
+            self.skipTest('Bash is required for the input regression test')
+        script = Path(__file__).with_name('bootstrap.sh').read_text(encoding='utf-8')
+        function = re.search(r'(?ms)^normalize_node_name\(\) \{\n.*?^\}', script)
+        self.assertIsNotNone(function)
+        for entered, expected in [
+                ('NODE-FI-02', 'NODE-FI-02'),
+                (' \tNODE-FI-02 \r\n', 'NODE-FI-02'),
+                ('\ufeff\u00a0NODE-FI-02\u202f\u200b', 'NODE-FI-02'),
+                ('NODE FI 02', 'NODE FI 02'),
+                (' \r\n', '')]:
+            with self.subTest(entered=repr(entered)):
+                result = subprocess.check_output([bash, '-c',
+                    function.group(0) + '\nnormalize_node_name "$1"', 'test', entered],
+                    text=True, encoding='utf-8', timeout=10)
+                self.assertEqual(result, expected)
+
     def test_token_diagnostics_hides_claim_identifiers(self):
         claims = base64.urlsafe_b64encode(json.dumps({'role': 'API', 'uuid': 'private-identifier'}).encode()).decode().rstrip('=')
         with patch.object(helper, 'TOKEN', 'header.' + claims + '.signature'):
@@ -60,8 +86,22 @@ class TransportTests(unittest.TestCase):
         for value in ('', '   ', 'Bearer ', 'abc\r\ndef', 'abc def', 'abc\x00def'):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 helper.normalize_token(value)
-        with self.assertRaisesRegex(RuntimeError, 'trailing backslash'):
-            helper.normalize_token('eyJheader.payload.signature\\')
+        for pasted in ('eyJheader.payload.signature\\', '"eyJheader.payload.signature"',
+                "'eyJheader.payload.signature'", 'Bearer "eyJheader.payload.signature"',
+                '\ufeff\u00a0eyJheader.payload.signature\u200b'):
+            with self.subTest(pasted=pasted):
+                self.assertEqual(helper.normalize_token(pasted), 'eyJheader.payload.signature')
+        for malformed in ('eyJheader.payload', 'eyJheader.payload.', 'eyJheader.payload.signature!'):
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(RuntimeError, 'JWT'):
+                helper.normalize_token(malformed)
+
+    def test_connection_validation_is_independent_of_token(self):
+        environment = dict(os.environ, PANEL_TOKEN='eyJheader.incomplete')
+        result = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('panel_setup.py')), 'connection'],
+            env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['https://panel.example.com', 'gate=exampleSecret'])
+        self.assertNotIn('eyJheader', result.stdout + result.stderr)
 
     def response(self, body=b'{"response": []}'):
         return io.BytesIO(body)

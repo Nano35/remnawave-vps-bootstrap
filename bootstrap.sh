@@ -10,6 +10,12 @@ CORE_PENDING=0
 CORE_BACKUP=''
 SETUP_BACKUP=''
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+normalize_node_name() {
+    local value=$1 whitespace=$' \t\r\n\v\f\u00a0\u202f\u200b\ufeff'
+    value=${value#"${value%%[!$whitespace]*}"}
+    value=${value%"${value##*[!$whitespace]}"}
+    printf '%s' "$value"
+}
 finish() {
     local rc=$?
     trap - EXIT ERR
@@ -40,9 +46,10 @@ read -rp 'Публичный IPv4 панели (источник соедине�
 read -rp 'URL панели (можно полную секретную ссылку входа): ' PANEL_INPUT
 PANEL_URL=$PANEL_INPUT
 read -rp 'Имя ноды/профиля (3–20 букв, цифр, _ или -): ' NODE_NAME
+NODE_NAME=$(normalize_node_name "$NODE_NAME")
 read -rp 'API-токен панели: ' PANEL_TOKEN
 [[ $NODE_DOMAIN =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]] || die 'Invalid domain'
-[[ $NODE_NAME =~ ^[A-Za-z0-9_-]{3,20}$ ]] || die 'Invalid node name'
+[[ $NODE_NAME =~ ^[A-Za-z0-9_-]{3,20}$ ]] || die "Invalid node name: $(printf '%q' "$NODE_NAME"). Use 3–20 ASCII letters, digits, underscore or hyphen (-)."
 NODE_DOMAIN=${NODE_DOMAIN,,}
 PANEL_URL=${PANEL_URL%/}
 export NODE_DOMAIN PANEL_IP PANEL_URL NODE_NAME PANEL_TOKEN BOOT_STATE=$STATE
@@ -52,6 +59,10 @@ PANEL_URL=${PANEL_CONNECTION[0]}
 PANEL_ACCESS_COOKIE=${PANEL_CONNECTION[1]}
 export PANEL_URL PANEL_ACCESS_COOKIE
 unset PANEL_INPUT PANEL_CONNECTION
+until python3 "$HERE/panel_setup.py" check-token; do
+    read -rp 'Повторите API-токен панели (полное значение из API Tokens): ' PANEL_TOKEN || die 'Token input aborted'
+    export PANEL_TOKEN
+done
 case ${1:-} in
     --check-api) python3 "$HERE/panel_setup.py" check-api; exit ;;
     --test-user) python3 "$HERE/panel_setup.py" test-user; exit ;;

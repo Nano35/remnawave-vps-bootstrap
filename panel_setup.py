@@ -41,19 +41,31 @@ ACCESS_COOKIE = os.environ.get('PANEL_ACCESS_COOKIE') or ACCESS_COOKIE
 if ACCESS_COOKIE and not re.fullmatch(r'[A-Za-z0-9_-]+=[A-Za-z0-9_-]+', ACCESS_COOKIE):
     raise RuntimeError('Invalid access cookie format')
 def normalize_token(value):
-    token = value.strip()
+    whitespace = ' \t\r\n\v\f\u00a0\u202f\u200b\ufeff'
+    token = value.strip(whitespace)
+    if len(token) >= 2 and token[0] in ('"', "'") and token[-1] == token[0]:
+        inner = token[1:-1].strip(whitespace)
+        if inner.startswith(('eyJ', 'Bearer ', 'bearer ')):
+            token = inner
     token = re.sub(r'^Bearer(?:[ \t]+|$)', '', token, flags=re.IGNORECASE).strip()
+    if len(token) >= 2 and token[0] in ('"', "'") and token[-1] == token[0] and token[1:4] == 'eyJ':
+        token = token[1:-1].strip(whitespace)
+    jwt_shape = r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+    # Repair only a known paste suffix when the remaining JWT shape is complete.
+    if token.startswith('eyJ') and token.endswith('\\') and re.fullmatch(jwt_shape, token[:-1]):
+        token = token[:-1]
     if not token:
         raise RuntimeError('API token is empty; paste the token issued by the panel')
     if any(not 33 <= ord(c) <= 126 for c in token):
         raise RuntimeError('API token contains internal whitespace/control/non-ASCII characters; paste it as one line')
-    if token.startswith('eyJ') and not re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', token):
+    if token.startswith('eyJ') and not re.fullmatch(jwt_shape, token):
         raise RuntimeError('JWT contains an extra character or is incomplete; copy the token without a trailing backslash, quotes or other suffix')
     return token
 
 
 try:
-    TOKEN = normalize_token(os.environ.get('PANEL_TOKEN', ''))
+    connection_only = __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == 'connection'
+    TOKEN = '' if connection_only else normalize_token(os.environ.get('PANEL_TOKEN', ''))
 except RuntimeError as e:
     print(f'ERROR: {e}', file=sys.stderr)
     sys.exit(1)
@@ -455,6 +467,10 @@ if __name__ == '__main__':
     try:
         command = sys.argv[1]
         if command == 'connection': print(URL); print(ACCESS_COOKIE)
+        elif command == 'check-token':
+            if TOKEN != os.environ.get('PANEL_TOKEN', ''):
+                print('Token paste formatting normalized (value hidden).')
+            print('API token format: OK; validity is checked by the panel API.')
         elif command == 'check-api': check_api()
         elif command == 'snapshot': panel_snapshot(sys.argv[2])
         elif command == 'rollback': rollback_panel(sys.argv[2])
