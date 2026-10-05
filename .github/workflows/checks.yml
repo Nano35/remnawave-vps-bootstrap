@@ -1,0 +1,30 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-checks:
+    name: Bash and offline Python tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Bash syntax
+        run: |
+          for script in bootstrap.sh host_options.sh rollback.sh external-test.sh; do
+            bash -n "$script"
+          done
+      - name: Python API transport tests
+        run: python3 -B test_panel_transport.py
+      - name: Offline setup and rollback tests
+        run: python3 -B test_panel_setup.py
