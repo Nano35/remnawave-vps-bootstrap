@@ -89,6 +89,10 @@ def restore(backup):
             'stop', 'remnanode', 'caddy'], check=True, timeout=120)
     # Stop/disable newly added services while their unit files still exist.
     for service, status in manifest['services'].items():
+        loaded = subprocess.run(['systemctl', 'show', service, '--property=LoadState', '--value'],
+            capture_output=True, text=True)
+        if loaded.returncode == 0 and loaded.stdout.strip() == 'not-found':
+            continue
         if not status['active']:
             subprocess.run(['systemctl', 'stop', service], check=False)
         if not status['enabled']:

@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import socket
 import ssl
+import re
+import sys
 import subprocess
 import time
 import urllib.request
@@ -17,6 +19,51 @@ STATUS = Path(os.environ.get('REMNA_MONITOR_STATUS', '/var/lib/remna-bootstrap/m
 
 def command(*args):
     return subprocess.check_output(args, text=True, timeout=15).strip()
+
+
+CORE_SCAN = r'''
+for p in /proc/[0-9]*; do
+    exe=$(readlink "$p/exe" 2>/dev/null) || continue
+    exe=${exe%" (deleted)"}
+    case "$exe" in */xray|*/rw-core|*/xray-custom) ;; *) continue;; esac
+    args=$(tr '\000' '\n' 2>/dev/null < "$p/cmdline") || continue
+    printf '%s\n' "$args" | grep -Eq '^(-test(=true)?|version)$' && continue
+    printf '%s\n' "$args" | grep -Eq '^(run|-config|-c|-confdir)(=.+)?$' || continue
+    digest=$(sha256sum "$p/exe" 2>/dev/null) || continue
+    printf '%s %s\n' "${p##*/}" "${digest%% *}"
+done
+'''
+
+
+def running_core_hash(expected=None, attempts=3, delay=1):
+    """Inspect executable identity, excluding probes; never print process arguments."""
+    if expected is not None and not re.fullmatch(r'[0-9a-f]{64}', expected):
+        raise RuntimeError('Invalid expected core SHA256')
+    reason = 'No running core executable found'
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(['docker', 'exec', 'remnanode', 'sh', '-c', CORE_SCAN],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode:
+                reason = f'Docker core scan failed (exit {result.returncode})'
+            else:
+                rows = [line.split() for line in result.stdout.splitlines() if line.strip()]
+                if any(len(row) != 2 or not row[0].isdigit() or
+                        not re.fullmatch(r'[0-9a-f]{64}', row[1]) for row in rows):
+                    reason = 'Unexpected core scan output'
+                elif len(rows) != 1:
+                    reason = f'Expected one active core executable, found {len(rows)}'
+                    if rows:
+                        reason += ' (PIDs: ' + ', '.join(row[0] for row in rows) + ')'
+                elif expected is not None and rows[0][1] != expected:
+                    reason = 'Running core SHA256 differs from the installed fork'
+                else:
+                    return rows[0][1]
+        except (OSError, subprocess.TimeoutExpired):
+            reason = 'Docker core scan unavailable or timed out'
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise RuntimeError(reason)
 
 
 def problems(config):
@@ -45,8 +92,7 @@ def problems(config):
         errors.append('Selfsteal TLS verification failed')
     try:
         expected = hashlib.sha256(Path('/opt/remnanode/xray-custom').read_bytes()).hexdigest()
-        actual = command('docker', 'exec', 'remnanode', 'sh', '-c',
-            'set --; for p in /proc/[0-9]*; do name=$(cat "$p/comm" 2>/dev/null) || continue; case "$name" in rw-core|xray) set -- "$@" "$p";; esac; done; [ "$#" -eq 1 ] || exit 1; sha256sum "$1/exe"').split()[0]
+        actual = running_core_hash(expected)
         if actual != expected:
             errors.append('Running core differs from installed fork')
     except Exception:
@@ -83,6 +129,13 @@ def update(config, errors):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == '--core-hash':
+        try:
+            print(running_core_hash(sys.argv[2] if len(sys.argv) > 2 else None, attempts=10, delay=2))
+        except Exception as e:
+            print(f'ERROR: Core process verification: {e}', file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(0)
     try:
         config = json.loads(CONFIG.read_text())
         raise SystemExit(update(config, problems(config)))

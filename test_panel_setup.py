@@ -199,6 +199,8 @@ with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
     service_calls = []
     def service_stub(*args, **kwargs):
         service_calls.append(args[0])
+        if args[0][:3] == ['systemctl', 'show', 'remna-monitor.timer']:
+            return SimpleNamespace(returncode=0, stdout='not-found\n')
         return SimpleNamespace(returncode=1)
     ops.subprocess = SimpleNamespace(run=service_stub, DEVNULL=-3)
     out = io.StringIO()
@@ -212,6 +214,8 @@ with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
     with redirect_stdout(io.StringIO()): ops.restore(backup)
     assert existing.read_text() == 'before' and not absent.exists()
     assert ['systemctl', 'restart', 'unbound'] in service_calls
+    assert ['systemctl', 'stop', 'remna-monitor.timer'] not in service_calls
+    assert ['systemctl', 'disable', 'remna-monitor.timer'] not in service_calls
     manifest = json.loads((backup / 'manifest.json').read_text())
     (backup / manifest['files'][str(existing)]['blob']).write_text('corrupted')
     existing.write_text('must stay')

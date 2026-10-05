@@ -249,7 +249,7 @@ docker cp "$STATE/xray.json" remnanode:/tmp/bootstrap-xray.json
 docker exec remnanode /usr/local/bin/xray run -test -config /tmp/bootstrap-xray.json
 docker exec remnanode rm -f /tmp/bootstrap-xray.json
 python3 "$HERE/panel_setup.py" verify
-PROCESS_HASH=$(docker exec remnanode sh -c 'set --; for p in /proc/[0-9]*; do name=$(cat "$p/comm" 2>/dev/null) || continue; case "$name" in rw-core|xray) set -- "$@" "$p";; esac; done; [ "$#" -eq 1 ] || exit 1; sha256sum "$1/exe"' | awk '{print $1}')
+PROCESS_HASH=$(python3 "$HERE/monitor.py" --core-hash "$HOST_HASH") || die 'Running core verification failed; see the diagnostic above'
 [[ $PROCESS_HASH == "$HOST_HASH" ]] || die 'The running Xray process does not match the fork binary'
 curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors --max-time 10 "https://$NODE_DOMAIN/" -o /dev/null
 CORE_PENDING=0

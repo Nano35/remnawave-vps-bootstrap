@@ -12,6 +12,10 @@ import re
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
+import tempfile
+import hashlib
+import shlex
 from email.message import Message
 
 os.environ.update(PANEL_URL='https://panel.example.com/?gate=exampleSecret', PANEL_TOKEN='exampleToken',
@@ -20,6 +24,75 @@ os.environ.pop('PANEL_ACCESS_COOKIE', None)
 spec = importlib.util.spec_from_file_location('panel_transport', Path(__file__).with_name('panel_setup.py'))
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
+core_spec = importlib.util.spec_from_file_location('core_probe', Path(__file__).with_name('monitor.py'))
+core = importlib.util.module_from_spec(core_spec)
+core_spec.loader.exec_module(core)
+
+
+class CoreProbeTests(unittest.TestCase):
+    expected = 'a' * 64
+
+    def scan(self, output='', returncode=0):
+        return SimpleNamespace(returncode=returncode, stdout=output)
+
+    def test_waits_for_core_after_container_restart(self):
+        with patch.object(core.subprocess, 'run', side_effect=[self.scan(), self.scan('225 ' + self.expected)]), \
+                patch.object(core.time, 'sleep') as sleep:
+            self.assertEqual(core.running_core_hash(self.expected), self.expected)
+        sleep.assert_called_once()
+
+    def test_waits_for_previous_core_to_exit(self):
+        with patch.object(core.subprocess, 'run', side_effect=[
+                self.scan('225 ' + 'b' * 64), self.scan('226 ' + self.expected)]), patch.object(core.time, 'sleep'):
+            self.assertEqual(core.running_core_hash(self.expected), self.expected)
+
+    def test_rejects_two_daemons_even_when_one_matches(self):
+        with patch.object(core.subprocess, 'run', return_value=self.scan(
+                '225 ' + self.expected + '\n226 ' + 'b' * 64)):
+            with self.assertRaisesRegex(RuntimeError, 'found 2'):
+                core.running_core_hash(self.expected, attempts=1)
+
+    def test_never_accepts_a_wrong_process_hash(self):
+        with patch.object(core.subprocess, 'run', return_value=self.scan('225 ' + 'b' * 64)), \
+                patch.object(core.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'differs'):
+                core.running_core_hash(self.expected)
+
+    def test_docker_failure_has_no_raw_command_or_stderr(self):
+        result = SimpleNamespace(returncode=1, stdout='', stderr='private-node-token')
+        with patch.object(core.subprocess, 'run', return_value=result):
+            with self.assertRaisesRegex(RuntimeError, 'Docker core scan failed') as error:
+                core.running_core_hash(self.expected, attempts=1)
+        self.assertNotIn('private-node-token', str(error.exception))
+
+    def test_shell_selects_renamed_daemon_and_excludes_test_and_zombie(self):
+        bash = shutil.which('bash')
+        if not bash and os.name == 'nt':
+            candidate = Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Git/bin/bash.exe'
+            bash = str(candidate) if candidate.exists() else None
+        if not bash:
+            self.skipTest('Bash is required')
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as td:
+            root = Path(td)
+            binary = root / 'xray-custom'
+            binary.write_bytes(b'fork binary fixture')
+            expected = hashlib.sha256(binary.read_bytes()).hexdigest()
+            proc = root / 'proc'
+            for pid, argv in [('225', ['rw-core', '-config', '@socket?token=private-node-token']),
+                    ('226', ['xray', 'run', '-test', '-config', '/tmp/test.json']),
+                    ('227', ['rw-core', '-config', '/tmp/config.json'])]:
+                p = proc / pid
+                p.mkdir(parents=True)
+                (p / 'comm').write_text('unrelated-name\n')
+                (p / 'cmdline').write_bytes(('\0'.join(argv) + '\0').encode())
+                try:
+                    (p / 'exe').symlink_to(binary if pid != '227' else root / 'missing' / 'xray')
+                except OSError:
+                    self.skipTest('Symlinks are unavailable for the proc fixture')
+            script = core.CORE_SCAN.replace('/proc/[0-9]*', shlex.quote(proc.as_posix()) + '/[0-9]*')
+            output = subprocess.check_output([bash, '-c', script], text=True, encoding='utf-8', timeout=10)
+            self.assertEqual(output.strip(), '225 ' + expected)
+            self.assertNotIn('private-node-token', output)
 
 
 class TransportTests(unittest.TestCase):
