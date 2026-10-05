@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="310" viewBox="0 0 1200 310" role="img" aria-labelledby="title desc">
+  <title id="title">Remnawave VPS Bootstrap</title>
+  <desc id="desc">Ubuntu 24.04: автоматическая настройка ноды, VLESS Reality Vision и Caddy selfsteal.</desc>
+  <rect width="1200" height="310" fill="#14191d"/>
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#f2f4f5">
+    <text x="62" y="78" font-size="28" fill="#a8b3ba">UBUNTU 24.04 / VPS SETUP</text>
+    <text x="62" y="152" font-size="65" font-weight="650">Remnawave</text>
+    <text x="62" y="217" font-size="54" font-weight="650">VPS Bootstrap</text>
+    <text x="62" y="268" font-size="28" fill="#a8b3ba">Docker · Reality / Vision · Caddy selfsteal</text>
+  </g>
+  <g transform="translate(845 66)" font-family="Consolas, monospace" font-size="27" fill="#cbd4d9">
+    <path d="M0 5V188M0 40H26M0 98H26M0 156H26" fill="none" stroke="#5b6d78" stroke-width="2"/>
+    <text x="43" y="49">:443  Xray</text>
+    <text x="43" y="107">unix  Caddy</text>
+    <text x="43" y="165">:2222 Node</text>
+  </g>
+</svg>
